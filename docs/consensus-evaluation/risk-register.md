@@ -15,6 +15,17 @@ Ratings express Phase 0 concern and uncertainty, not an observed incident. Stati
 | R9 | “Check budget” mistaken for request/byte/rate bound | **Medium** | CLI says 30,000 checks, not HTTP requests (`consensus_osint/cli.py:218-219`); budget counts site/module invocations, internal requests/retries continue (`core/scan_budget.py:1-5`). | Enforce request/byte/time budgets separately before adoption. |
 | R10 | Test claims or external CI coverage overstated | **Medium** | No test/CI file matched the bounded checkout inventory; no tests were run. | Treat as “not found in inspected names,” not proof of no external CI. Phase-end checks required by prompt pack. |
 
+## Phase 2 updates (2026-11-04)
+
+| ID | Risk | Rating | Phase 2 evidence / disposition |
+|---|---|---:|---|
+| R9 | Check budget mistaken for request/byte/time bound | **High** | `ScanBudget` admits one site/module invocation per check; retries and additional HTTP requests occur inside the invocation (`consensus_osint/core/scan_budget.py:1-24`, `core/http.py:76-131,240-312`). Use finite `--max-checks` only as a work-count ceiling; Phase 4 must establish request, byte, and wall-time controls before automation. |
+| R11 | Process termination may lose partial work | **High** | CLI catches KeyboardInterrupt and returns 130 with a partial summary path; SIGTERM has no handler and defaults to termination (`consensus_osint/cli.py:1340-1350,1849-1855`). `run_all` cancels pending tasks and awaits cleanup, but that does not establish process-group cancellation for optional child processes (`core/runner.py:103-178`). Phase 4 needs controlled SIGINT/SIGTERM and subprocess lifecycle evidence. |
+| R12 | Machine-output order and process exit do not encode all finding outcomes | **Medium** | Concurrent callbacks emit in completion order (`core/runner.py:38-178`); scan-level provider errors remain finding statuses while command exit is normally 0 (`cli.py:1399-1415`). Consumers must parse each record and sort for comparison; Phase 4 should define and verify the wire contract. |
+| R13 | Strict automation policy is advisory, not enforced by a mode | **High** | Recursion, loud checks, AI, browser, solver, and search features are exposed as CLI flags; omission is a caller convention. This branch adds no suite mode or route policy. Phase 1 remains a separate blocking gate and may have concurrent work not present in this branch. |
+
+Issue #13 is addressed in the pinned source by a guard that rejects a leading option followed by a command before scan dispatch. No CLI source fix was needed. The offline harness and command contract are committed on this branch. R1-R3 and R6 from Phase 0 remain open; Phase 2 does not establish egress safety.
+
 ## Required gate dependencies
 
 - **Phase 1:** R1–R3 and R6 block any enabled suite module until controlled fail-closed routing is demonstrated.
