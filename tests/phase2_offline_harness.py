@@ -156,6 +156,9 @@ def main() -> None:
                 ready, _, _ = select.select([child.stdout], [], [], 15)
                 assert ready, "CLI emitted no first JSONL result"
                 first_line = child.stdout.readline()
+                if not first_line:
+                    stdout_tail, stderr = child.communicate(timeout=10)
+                    raise AssertionError(f"CLI exited before JSONL output ({child.returncode}): {stdout_tail!r} {stderr!r}")
                 row = json.loads(first_line)
                 assert row["status"] == "found" and row["site_id"] == "phase2-fast", row
                 assert slow_started.wait(5), "second local check did not start"
