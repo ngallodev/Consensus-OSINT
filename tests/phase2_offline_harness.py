@@ -28,6 +28,10 @@ EXPECTED = {
     "fixture-error": "unknown",
 }
 def child_main(port: int) -> None:
+    user_site = python_site.getusersitepackages()
+    if user_site in sys.path:
+        sys.path.remove(user_site)
+        sys.path.append(user_site)  # Keep stdlib modules ahead of same-named third-party packages.
     import consensus_osint.cli as cli
 
     from consensus_osint.core.sitesdb import SiteDB
@@ -144,11 +148,9 @@ def main() -> None:
 
         with tempfile.TemporaryDirectory(prefix="consensus-phase2-home-") as isolated_home:
             env = os.environ.copy()
-            env["HOME"] = isolated_home
+            env["HOME"] = os.environ.get("HOME", isolated_home)
             env["CONSENSUS_HOME"] = isolated_home
-            env["PYTHONPATH"] = os.pathsep.join((
-                str(Path(__file__).resolve().parents[1]), python_site.getusersitepackages(),
-            ))
+            env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
             env = {key: env[key] for key in ("PATH", "HOME", "CONSENSUS_HOME", "PYTHONPATH") if key in env}
             child = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve()), "--child", str(server.server_port)],
