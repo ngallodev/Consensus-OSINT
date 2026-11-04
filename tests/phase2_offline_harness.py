@@ -44,11 +44,14 @@ def child_main(port: int) -> None:
     ])
     SiteDB.load = classmethod(lambda cls, *args, **kwargs: db)
     cli.all_modules = lambda: []
-    raise SystemExit(cli.main([
+    prior_sigterm = signal.getsignal(signal.SIGTERM)
+    exit_code = cli.main([
         "user", "fixture-user", "--site", "phase2-fast,phase2-slow", "--no-modules", "--jsonl", "--quiet",
         "--no-update-check", "--no-footer", "--no-animation", "--max-checks", "2", "--concurrency", "1",
         "--no-impersonate",
-    ]))
+    ])
+    assert signal.getsignal(signal.SIGTERM) is prior_sigterm
+    raise SystemExit(exit_code)
 
 
 def main() -> None:
