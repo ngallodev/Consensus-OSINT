@@ -37,9 +37,9 @@ def child_main(port: int) -> None:
     from consensus_osint.core.sitesdb import SiteDB
 
     db = SiteDB([
-        Site.from_dict({"id": "phase2-fast", "name": "Fast fixture", "url": f"http://127.0.0.1:{port}/profile/fixture-found",
+        Site.from_dict({"id": "phase2-fast", "name": "Fast fixture", "url": f"http://127.0.0.1:{port}/profile/fixture-found/{{username}}",
                         "detect": {"type": "message", "found_strings": ["fixture profile"]}}),
-        Site.from_dict({"id": "phase2-slow", "name": "Slow fixture", "url": f"http://127.0.0.1:{port}/profile/fixture-slow",
+        Site.from_dict({"id": "phase2-slow", "name": "Slow fixture", "url": f"http://127.0.0.1:{port}/profile/fixture-slow/{{username}}",
                         "detect": {"type": "message", "found_strings": ["fixture profile"]}}),
     ])
     SiteDB.load = classmethod(lambda cls, *args, **kwargs: db)
@@ -66,13 +66,18 @@ def main() -> None:
                 requests.append(self.path)
                 attempts[self.path] = attempts.get(self.path, 0) + 1
                 attempt = attempts[self.path]
-            if self.path == "/profile/fixture-slow":
+            if self.path.startswith("/profile/fixture-slow/"):
                 slow_started.set()
                 time.sleep(30)
-            response = routes.get(self.path)
-            if self.path == "/profile/fixture-slow":
+            route = self.path
+            if route.startswith("/profile/fixture-found/"):
+                route = "/profile/fixture-found"
+            elif route.startswith("/profile/fixture-slow/"):
+                route = "/profile/fixture-slow"
+            response = routes.get(route)
+            if route == "/profile/fixture-slow":
                 response = {"status": 200, "body": "fixture profile"}
-            if self.path == "/profile/fixture-retry" and attempt == 1:
+            if route == "/profile/fixture-retry" and attempt == 1:
                 self.close_connection = True
                 self.connection.shutdown(2)
                 self.connection.close()
