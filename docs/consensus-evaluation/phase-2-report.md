@@ -4,7 +4,7 @@
 **Repository / branch:** `/lump/apps/.worktrees/consensus-phase2-lifecycle`, `consensus-phase2-lifecycle`
 **Base:** `862826852114342808629b0bfa73b681eb806fd4` (Phase 0 documentation commit)
 **Pinned source revision:** parent `12206f7608ea1c1d30810b1728c215f938554562`, Consensus 0.4.12
-**Result:** **Phase 2 gate NOT PASSED.** CLI parsing and result semantics are sufficiently stable for bounded offline harness work, but the full gate requires demonstrated bounded work and reliable cancellation; a check-count budget is not a request/time/byte budget, SIGTERM is not handled, and output order is completion-dependent. No Phase 1 changes are assumed. No suite files were read or modified in this phase.
+**Result:** **Phase 2 gate NOT PASSED.** CLI parsing and result semantics are sufficiently stable for bounded offline harness work, but the full gate requires demonstrated bounded work and reliable cancellation. SIGTERM during a POSIX scan now preserves streamed results and exits 130; check-count limits still do not bound total requests, bytes, or time, and output order is completion-dependent. No Phase 1 changes are assumed. No suite files were read or modified in this phase.
 
 ## Scope and graph evidence
 
@@ -36,9 +36,9 @@ It documents 0.4.11 behavior where `--no-color user ...`, `--no-color email ...`
 
 - `consensus scan|user|email|phone` is the subprocess entry point. JSONL mode routes scan printer messages to stderr; scan records go to stdout. Quiet/no-footer/no-animation/no-update-check flags reduce interactive and update behavior. JSONL completion order follows asynchronous check completion, so record order is nondeterministic (`cli.py:1190-1194`, `core/runner.py:38-178`).
 - Finding statuses preserve `found`, `not_found`, `unknown`, `blocked`, `rate_limited`, `error`, and `skipped` (`core/models.py:19-37`). Do not turn unknown/blocked/error/skipped or budget-deferred checks into negatives.
-- Exit 0 indicates scan completion even when provider outcomes include errors; exit 1 is report-save failure; exit 2 is invalid CLI/input; exit 130 is KeyboardInterrupt. These are command-level outcomes, separate from per-check result statuses (`cli.py:1328-1415,1774-1864`).
+- Exit 0 indicates scan completion even when provider outcomes include errors; exit 1 is report-save failure; exit 2 is invalid CLI/input or when selection leaves no checks; exit 130 is interruption. These are command-level outcomes, separate from per-check result statuses (`cli.py:1328-1426,1774-1864`).
 - The 30,000 default counts admitted site/module invocations, not HTTP attempts, retries, response bytes, or duration. `ScanBudget.admit` increments once before a site/module call; multiple requests/retries can occur inside it (`core/scan_budget.py:1-52`, `core/runner.py:103-178`, `core/http.py:76-131,240-312`). `--max-checks 0` is unlimited. Default request concurrency is 100, per-host 4; safe methods may be retried once.
-- SIGINT is translated to exit 130 and a partial summary path; a stopped scan cancels in-flight async tasks and waits for cleanup. SIGTERM is not registered and therefore does not promise partial output. No process-group termination contract exists for optional browser/child-process paths (`cli.py:1328-1350,1849-1855`; `core/runner.py:103-178`).
+- SIGINT is translated to exit 130 and a partial summary path; a stopped scan cancels in-flight async tasks and waits for cleanup. This continuation adds a temporary SIGTERM handler during `cmd_scan` that routes it through the same `KeyboardInterrupt` path and restores the prior handler (`cli.py:1278-1312`). A loopback subprocess check verifies exit 130 and preservation of a previously streamed JSONL result. Process-group termination for optional browser/child-process paths and Windows signal behavior remain untested (`core/runner.py:103-178`).
 - Report save uses a temporary file followed by `os.replace` (`core/reports.py:1432-1456`), giving atomic replacement on the same filesystem in the inspected path. This was source inspection; crash behavior was not tested.
 - No stable run ID, durable scheduler, exactly-once replay, or idempotent resumption mechanism was found in the CLI path. Existing saved reports can be re-rendered; repeating a scan issues a new check sequence.
 - Loud checks, recursion, search engines, mailcat, browser, FlareSolverr, AI, and browser opening are opt-in flags, but no strict automation mode centrally rejects them. A caller can omit them; that is not an enforceable profile or network-safety guarantee. `--no-update-check` only suppresses the startup check.
@@ -46,16 +46,20 @@ It documents 0.4.11 behavior where `--no-color user ...`, `--no-color email ...`
 
 ## Offline fixtures and reproducible checks
 
-Added `tests/fixtures/phase2/fake_provider.json` and `tests/phase2_offline_harness.py`. The harness binds only `127.0.0.1`, exercises production `Http` and `check_site`, checks five fixed outcomes, and asserts request sequence/count. It does not perform external lookups.
+Added `tests/fixtures/phase2/fake_provider.json` and extended `tests/phase2_offline_harness.py`. It binds only `127.0.0.1`, exercises production `Http`, `check_site`, and a CLI child process, validates JSONL stdout, interrupts an in-flight child check with SIGTERM, forces a single GET retry, checks response-size rejection, and measures local request arrivals and response-body bytes written. All proxy environment variables are removed in the harness process; the CLI child receives only `PATH`, `HOME`, `CONSENSUS_HOME`, and `PYTHONPATH`, with a temporary Consensus home. No external lookup is made.
 
 Phase-end execution evidence:
 
 | Command | Result |
 |---|---|
 | `PYTHONPATH=. python3 tests/phase2_offline_harness.py` (initial attempt) | exit 1: fixture URL used `{}` rather than `{username}`; no request reached the fake route, checks were skipped. |
-| Same command (second attempt) | exit 1: checker returned `unknown` for generic 200/500 responses; initial expected statuses were too strong. Corrected fixture detection and expected 500 semantics. |
-| `PYTHONPATH=. python3 tests/phase2_offline_harness.py` (final) | exit 0; `{"findings": {"fixture-blocked": "blocked", "fixture-error": "unknown", "fixture-found": "found", "fixture-not-found": "not_found", "fixture-rate-limited": "rate_limited"}, "requests": 5}`. |
-| `git diff --check` | exit 0. |
+| `PYTHONPATH=. python3 tests/phase2_offline_harness.py` (second attempt) | exit 1: checker returned `unknown` for generic 200/500 responses; initial expected statuses were too strong. Corrected fixture detection and expected 500 semantics. |
+| `PYTHONPATH=. python3 tests/phase2_offline_harness.py` (continuation, first subprocess attempt) | exit 1: isolated `HOME` hid the locally installed `prompt_toolkit`; no scan ran. |
+| `PYTHONPATH=. python3 tests/phase2_offline_harness.py` (second subprocess attempt) | exit 1: adding the user site directory before stdlib loaded an obsolete `argparse` 1.4.0 without `BooleanOptionalAction`; no scan ran. |
+| `PYTHONPATH=. python3 tests/phase2_offline_harness.py` (third subprocess attempt) | exit 1: CLI correctly selected zero checks because synthetic site definitions omitted `{username}`; fixed fixture URLs. |
+| `PYTHONPATH=. python3 tests/phase2_offline_harness.py` (final continuation run) | exit 0; `{"findings": {"fixture-blocked": "blocked", "fixture-error": "unknown", "fixture-found": "found", "fixture-not-found": "not_found", "fixture-rate-limited": "rate_limited"}, "jsonl_records": 1, "requests": 10, "response_body_bytes": 359, "response_limit": "response exceeds 32 bytes", "retry_attempts": 2, "signal_exit": 130}`. |
+| `git diff --check` | exit 0 before the implementation commit. |
+| `git diff --cached --check` | exit 0 before the separate documentation commit. |
 
 The issue #13 command was exactly:
 
@@ -67,7 +71,9 @@ except SystemExit as e: print(f"observed_exit={e.code}")' 2>&1
 
 It exited 0 and printed the reorder instruction plus `observed_exit=2`.
 
-No existing test suite or CI workflow was present in the bounded checkout; no broader suite ran. The initial harness failures are retained here as fixture-development failures, not hidden. No exact-provider subprocess, SIGINT/SIGTERM, atomic-save crash, retry-count, bytes, or packet-capture test was run.
+The local fixture observed 10 HTTP GET requests: five outcome cases, two retry attempts for one safe GET, one oversized response, and two CLI child requests. The server successfully wrote 359 response-body bytes. This excludes HTTP headers, TCP/IP overhead, aborted-client bytes, and any traffic outside the loopback fixture; it is a measurement, not an enforced global budget. The 32-byte client response cap returned `response exceeds 32 bytes`. The subprocess emitted one parseable JSONL row before SIGTERM and exited 130 while its next loopback request was pending.
+
+No existing full test suite or CI workflow was found in the bounded checkout; no broader suite ran. Failures above are retained. No real-provider process, SIGINT subprocess, process-group cleanup, atomic-save crash, packet-capture, or external traffic test was run.
 
 ## Changes and commits
 
@@ -75,19 +81,25 @@ Implementation-only commits:
 
 - `475fa0ea70a62eec9d0488c39f2bf34604b04ee4` — deterministic fake-provider fixture and loopback harness.
 - `ae4565cf3d82648a4a91f16fc120218624c5cf33` — corrected harness URL interpolation and outcome semantics based on checkpoint failures.
+- `7c158a37e5d1cfe1165536008b9fd4a8121ad4c7` — temporary SIGTERM-to-interrupt handling and expanded loopback lifecycle coverage.
+- `7032612d897744947666c931a13f08f999162cae` — subprocess failure diagnostics.
+- `4a611f8b981d991e0bb162661923435d74626dc9` — retain local dependencies while isolating the child application home.
+- `119eaa59ec1389c83a47e94b0dce40214f6e9099` — keep stdlib imports ahead of the user site in the child process.
+- `43d95e1ce165499cc4abfb376dc4cf5cf6bcf877` — include required username templates in the synthetic site URLs.
+- `4af8ccf042e53fde411e961cc109c64f18da3b4b` — assert SIGTERM handler restoration.
 
-No CLI implementation fix was made: issue #13 is already guarded in the pinned source, and broader lifecycle fixes need bounded design and dedicated controlled tests. Documentation is committed separately from implementation. No changes were made to the suite, Phase 0 report, remotes, or other branch. No external OSINT query, credentials, publication, or merge occurred. The Phase 1 branch was not merged or assumed present.
+No fix was needed for issue #13; the source guard already prevents accidental dispatch. SIGTERM handling was fixed at the scan lifecycle boundary. Documentation is committed separately from implementation. No changes were made to the suite, Phase 0 report, remotes, or other branch. No external OSINT query, credentials, publication, or merge occurred. The Phase 1 branch was not merged or assumed present.
 
 ## Deferred Phase 4 work / limitations
 
 1. Add an enforceable automation profile only after Phase 1 establishes an approved egress contract; ensure recursion, loud checks, AI, challenge solvers, browser, and updates cannot be enabled accidentally.
 2. Define request/attempt, byte, and wall-time budgets; `--max-checks` alone does not bound those quantities.
-3. Specify and verify SIGINT/SIGTERM behavior, async cleanup, and process-group termination for optional subprocesses.
+3. Verify SIGINT and platform behavior, and process-group termination for optional subprocesses; this branch verifies POSIX SIGTERM on an in-flight loopback scan.
 4. Specify JSONL schema/order and command exit semantics for partial runs, provider errors, and serialization/save failures; add stable downstream ordering or guarantee it explicitly.
-5. Exercise output atomicity, idempotent replay/resume expectations, actual retries, duplicate selection, and cancellation in offline controlled tests.
+5. Exercise output atomicity, idempotent replay/resume expectations, retry behavior outside the one local GET case, duplicate selection, and cancellation in offline controlled tests.
 
 Jev was not called: after the issue text and source were inspected, the relevant decision was deterministic (guarded ordering; lifecycle limits explicitly remain unverified), with no semantic alternative requiring judgment. No authentication or credentials were sought.
 
 ## Gate and handoff
 
-**Gate: NOT PASSED for collector automation/adoption.** The CLI guard and deterministic offline checker harness pass their bounded checks. Stable record ordering, total-work bounding, SIGTERM/cancellation guarantees, strict automation enforcement, and Phase 1 route safety remain unproven. Retain the existing suite collectors. Phase 4 owns the lifecycle fixes after controlled constraints and safety gates are available.
+**Gate: NOT PASSED for collector automation/adoption.** The CLI guard, five outcome fixtures, retry/response-size check, JSONL subprocess, and POSIX SIGTERM partial-result check pass in the bounded local harness. Stable record ordering, total request/byte/time bounds, optional child process-group cleanup, strict automation enforcement, and Phase 1 route safety remain unproven. The measured 359 body bytes do not constitute a global limit. Retain existing suite collectors; Phase 4 owns the remaining lifecycle work after its safety constraints are available.

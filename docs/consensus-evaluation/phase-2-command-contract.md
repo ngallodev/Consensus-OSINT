@@ -21,8 +21,8 @@ This shape documents flags only; live collector execution is not authorized by P
 - Findings retain `found`, `not_found`, `unknown`, `blocked`, `rate_limited`, `error`, and `skipped`; do not reinterpret missing output or `not_found` after an interrupted/budget-limited run as coverage.
 - Exit `0`: command completed, including scans with provider-level error findings.
 - Exit `1`: requested report could not be saved.
-- Exit `2`: invalid command/options or scan input/output validation error.
-- Exit `130`: interrupted scan; partial findings may be retained when `--output` is used. SIGINT is handled as cancellation. SIGTERM uses the platform's default termination; graceful partial output is not established.
+- Exit `2`: invalid command/options, scan input/output validation error, or filters selecting no checks.
+- Exit `130`: interrupted scan. SIGINT follows the existing partial-summary path; during a scan, SIGTERM now temporarily uses the same handler and restores the prior handler on exit. The offline subprocess check confirms the streamed JSONL record survives. Process-group cleanup for optional child processes remains unverified.
 - Resume/replay: no durable run identity or exactly-once replay contract exists. Saved reports can be rendered again with `consensus report INPUT -o OUTPUT`; a new scan is a new request sequence.
 
 Sanitized result example:
@@ -33,10 +33,12 @@ Sanitized result example:
 
 ## Deterministic offline harness
 
-`tests/phase2_offline_harness.py` serves fixed responses from `tests/fixtures/phase2/fake_provider.json` on `127.0.0.1` only and calls the production `check_site`/`Http` path. It covers found, not-found, blocked, rate-limited, and HTTP 500 (`unknown`, because a server error does not establish absence) and asserts request order/count. It does not exercise transport-error findings, vendored modules, subprocess process groups, real DNS/proxy routing, SIGTERM, or provider accuracy.
+`tests/phase2_offline_harness.py` serves fixed responses from `tests/fixtures/phase2/fake_provider.json` on `127.0.0.1` only and calls the production `check_site`/`Http` path. It covers found, not-found, blocked, rate-limited, and HTTP 500 (`unknown`, because a server error does not establish absence), plus one retry, response-size rejection, JSONL stdout, and SIGTERM during an in-flight subprocess scan. It counts actual requests received and successful response-body bytes written by the local fixture, excluding headers and socket/protocol bytes. It does not exercise vendored modules, process groups, real DNS/proxy routing, SIGINT in a subprocess, or provider accuracy.
 
-Phase-end command: `PYTHONPATH=. python3 tests/phase2_offline_harness.py`. Do not run until the Phase 2 checkpoint. Expected output is `{"findings": {"fixture-blocked": "blocked", "fixture-error": "unknown", "fixture-found": "found", "fixture-not-found": "not_found", "fixture-rate-limited": "rate_limited"}, "requests": 5}`.
+Phase-end command: `PYTHONPATH=. python3 tests/phase2_offline_harness.py`. The expanded harness also runs a CLI subprocess against loopback fixtures, validates its JSONL stdout, sends SIGTERM during a pending local request, measures request arrivals/retries and response-body bytes, and verifies response-size rejection. It does not count HTTP headers or socket/protocol bytes and is not a total egress budget.
+
+Verified output: `{"findings": {"fixture-blocked": "blocked", "fixture-error": "unknown", "fixture-found": "found", "fixture-not-found": "not_found", "fixture-rate-limited": "rate_limited"}, "jsonl_records": 1, "requests": 10, "response_body_bytes": 359, "response_limit": "response exceeds 32 bytes", "retry_attempts": 2, "signal_exit": 130}`.
 
 ## Issue #13
 
-Upstream issue #13 reports a leading global option turning the following subcommand into a username. The pinned source's `normalise_argv` scans leading options using argparse arity and rejects a leading option followed by a command with exit `2` before dispatch (`consensus_osint/cli.py:416-472`). It does not support moving arbitrary global options ahead of subcommands, but prevents the accidental full scan. A side-effect-free invocation check is reserved for the Phase 2 checkpoint.
+Upstream issue #13 reports a leading global option turning the following subcommand into a username. The pinned source's `normalise_argv` scans leading options using argparse arity and rejects a leading option followed by a command with exit `2` before dispatch (`consensus_osint/cli.py:416-472`). It does not support moving arbitrary global options ahead of subcommands, but prevents the accidental full scan. A side-effect-free invocation check confirmed scan dispatch is not reached.
