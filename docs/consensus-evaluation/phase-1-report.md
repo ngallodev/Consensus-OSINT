@@ -1,8 +1,8 @@
 # Phase 1 — network egress and fail-closed routing
 
-**Assessment date:** 2026-11-04  
-**Base:** `862826852114342808629b0bfa73b681eb806fd4`  
-**Branch:** `consensus-phase1-network`  
+**Assessment date:** 2026-11-04
+**Base:** `862826852114342808629b0bfa73b681eb806fd4`
+**Branch:** `consensus-phase1-network`
 **Gate: BLOCKED.** No enabled route has packet-level fail-closed evidence. No public identity/provider, credential, or suite was accessed.
 
 ## Environment and evidence
