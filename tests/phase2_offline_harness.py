@@ -17,7 +17,7 @@ EXPECTED = {
     "fixture-not-found": "not_found",
     "fixture-blocked": "blocked",
     "fixture-rate-limited": "rate_limited",
-    "fixture-error": "error",
+    "fixture-error": "unknown",
 }
 
 
@@ -47,8 +47,9 @@ def main() -> None:
         site = Site.from_dict({
             "id": "phase2-fake-provider",
             "name": "Phase 2 fake provider",
-            "url": f"http://127.0.0.1:{server.server_port}/profile/{{}}",
-            "detect": {"type": "status_code", "found_status": [200], "missing_status": [404]},
+            "url": f"http://127.0.0.1:{server.server_port}/profile/{{username}}",
+            "detect": {"type": "message", "found_strings": ["fixture profile"],
+                       "missing_strings": ["not found"]},
         })
 
         async def run():
