@@ -6,6 +6,7 @@ import json
 import os
 import select
 import signal
+import site as python_site
 import subprocess
 import sys
 import tempfile
@@ -145,7 +146,9 @@ def main() -> None:
             env = os.environ.copy()
             env["HOME"] = isolated_home
             env["CONSENSUS_HOME"] = isolated_home
-            env["PYTHONPATH"] = str(Path(__file__).resolve().parents[1])
+            env["PYTHONPATH"] = os.pathsep.join((
+                str(Path(__file__).resolve().parents[1]), python_site.getusersitepackages(),
+            ))
             env = {key: env[key] for key in ("PATH", "HOME", "CONSENSUS_HOME", "PYTHONPATH") if key in env}
             child = subprocess.Popen(
                 [sys.executable, str(Path(__file__).resolve()), "--child", str(server.server_port)],
