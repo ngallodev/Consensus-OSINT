@@ -15,6 +15,18 @@ Ratings express Phase 0 concern and uncertainty, not an observed incident. Stati
 | R9 | “Check budget” mistaken for request/byte/rate bound | **Medium** | CLI says 30,000 checks, not HTTP requests (`consensus_osint/cli.py:218-219`); budget counts site/module invocations, internal requests/retries continue (`core/scan_budget.py:1-5`). | Enforce request/byte/time budgets separately before adoption. |
 | R10 | Test claims or external CI coverage overstated | **Medium** | No test/CI file matched the bounded checkout inventory; no tests were run. | Treat as “not found in inspected names,” not proof of no external CI. Phase-end checks required by prompt pack. |
 
+## Phase 2 updates (2026-11-04)
+
+| ID | Risk | Rating | Phase 2 evidence / disposition |
+|---|---|---:|---|
+| R9 | Check budget mistaken for request/byte/time bound | **High** | `ScanBudget` admits one site/module invocation per check; retries and additional HTTP requests occur inside the invocation (`consensus_osint/core/scan_budget.py:1-24`, `core/http.py:76-131,240-312`). Use finite `--max-checks` only as a work-count ceiling; Phase 4 must establish request, byte, and wall-time controls before automation. |
+| R10 | Test claims or external CI coverage overstated | **Medium** | No pre-existing test suite or CI workflow was found in the bounded checkout. The new local harness passes its focused phase-end checks; this is not broader suite or CI coverage. |
+| R11 | Process termination may lose partial work | **Medium** | CLI temporarily routes SIGTERM through its KeyboardInterrupt partial-summary path and restores the prior handler (`consensus_osint/cli.py:1278-1312`); local subprocess fixture confirmed exit 130 and one preserved JSONL record. Process-group cancellation for optional child processes and non-POSIX behavior remain unverified (`core/runner.py:103-178`). |
+| R12 | Machine-output order and process exit do not encode all finding outcomes | **Medium** | Concurrent callbacks emit in completion order (`core/runner.py:38-178`); scan-level provider errors remain finding statuses while command exit is normally 0 (`cli.py:1399-1415`). Consumers must parse each record and sort for comparison; Phase 4 should define and verify the wire contract. |
+| R13 | Strict automation policy is advisory, not enforced by a mode | **High** | Recursion, loud checks, AI, browser, solver, and search features are exposed as CLI flags; omission is a caller convention. This branch adds no suite mode or route policy. Phase 1 remains a separate blocking gate and may have concurrent work not present in this branch. |
+
+Phase 2 continuation confirms a SIGTERM fix and loopback request/retry/body-byte measurements; see `phase-2-report.md`. The retry fixture made two local GET attempts and the harness counted 359 response-body bytes across 10 received requests. These counts exclude headers and transport bytes and do not establish a global byte/request ceiling. R1-R3 and R6 from Phase 0 remain open; Phase 2 does not establish egress safety.
+
 ## Required gate dependencies
 
 - **Phase 1:** R1–R3 and R6 block any enabled suite module until controlled fail-closed routing is demonstrated.
