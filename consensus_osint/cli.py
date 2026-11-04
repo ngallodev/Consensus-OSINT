@@ -19,6 +19,7 @@ import json
 import logging
 import math
 import os
+import signal
 import sys
 import time
 import unicodedata
@@ -1278,7 +1279,12 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
 
     interrupted = False
     previous_animation = printer.terminal_ui.animate if printer.terminal_ui else None
+    previous_sigterm = None
     try:
+        try:
+            previous_sigterm = signal.signal(signal.SIGTERM, signal.default_int_handler)
+        except (AttributeError, ValueError):
+            pass  # SIGTERM is unavailable or this scan runs outside the main thread.
         if printer.terminal_ui and args.no_animation:
             printer.terminal_ui.update(animate=False)
         printer.tab_progress.start()
@@ -1293,11 +1299,15 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
         printer.warn(f"interrupted - keeping the {n} result{'s' if n != 1 else ''} gathered so far")
     finally:
         try:
-            printer.stop_preparation()
+            if previous_sigterm is not None:
+                signal.signal(signal.SIGTERM, previous_sigterm)
         finally:
-            printer.tab_progress.clear()
-            if printer.terminal_ui:
-                printer.terminal_ui.update(animate=previous_animation)
+            try:
+                printer.stop_preparation()
+            finally:
+                printer.tab_progress.clear()
+                if printer.terminal_ui:
+                    printer.terminal_ui.update(animate=previous_animation)
     if solver_line:
         printer.message(solver_line, "dim")
     interrupted = interrupted or bool(summary.options.get("interrupted"))

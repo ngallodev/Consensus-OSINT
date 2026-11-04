@@ -3,5 +3,7 @@
   "/profile/fixture-not-found": {"status": 404, "body": "not found"},
   "/profile/fixture-blocked": {"status": 403, "body": "blocked"},
   "/profile/fixture-rate-limited": {"status": 429, "body": "rate limited"},
-  "/profile/fixture-error": {"status": 500, "body": "provider error"}
+  "/profile/fixture-error": {"status": 500, "body": "provider error"},
+  "/profile/fixture-retry": {"status": 200, "body": "fixture profile"},
+  "/profile/fixture-large": {"status": 200, "body": "fixture profile xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}
 }
