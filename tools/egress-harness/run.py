@@ -366,27 +366,58 @@ def inside() -> None:
         assert capture.counts[origin_key] == origin_before
         print("PASS: unavailable proxy failed closed; no fake-origin fallback packet observed")
 
-        proxy_env = {name: os.environ.get(name) for name in ("HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")}
+        proxy_names = ("HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
+        proxy_env = {name: os.environ.get(name) for name in proxy_names}
         os.environ.update(HTTP_PROXY=f"http://127.0.0.1:{PROXY_PORT}", NO_PROXY="", no_proxy="")
-        os.environ.pop("http_proxy", None)
-        os.environ.pop("ALL_PROXY", None)
-        os.environ.pop("all_proxy", None)
+        for name in ("http_proxy", "HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+            os.environ.pop(name, None)
         before_proxy, before_origin = capture.counts[proxy_key], capture.counts[origin_key]
-        client = Http(impersonate=None, http2=False)
+        client = None
         try:
-            result = asyncio.run(client.get(f"http://127.0.0.1:{ORIGIN_PORT}/ambient-env", timeout=1))
-            assert result.text == "fixture-origin", result
+            client = Http(impersonate=None, http2=False)
+            result = asyncio.run(client.get("http://fixture.invalid/ambient-env", timeout=1))
+            assert result.text == "fixture-proxy", result
+            assert b"http://fixture.invalid/ambient-env" in fixtures.requests[-1]
         finally:
-            asyncio.run(client.aclose())
+            if client is not None:
+                asyncio.run(client.aclose())
             for name, value in proxy_env.items():
                 if value is None:
                     os.environ.pop(name, None)
                 else:
                     os.environ[name] = value
         time.sleep(0.1)
-        assert capture.counts[origin_key] > before_origin
-        assert capture.counts[proxy_key] == before_proxy
-        print("PASS: HTTPX ignored ambient proxy environment and used the loopback origin directly")
+        assert capture.counts[proxy_key] > before_proxy
+        assert capture.counts[origin_key] == before_origin
+        print("PASS: standalone Http honored HTTP_PROXY and preserved the ambient route")
+
+        strict_env = os.environ.get("OSINT_REQUIRE_PROXY")
+        os.environ["OSINT_REQUIRE_PROXY"] = "1"
+        os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{ORIGIN_PORT}"
+        os.environ["NO_PROXY"] = ""
+        os.environ["no_proxy"] = ""
+        before_proxy, before_origin = capture.counts[proxy_key], capture.counts[origin_key]
+        client = None
+        try:
+            client = Http(proxy=f"http://127.0.0.1:{PROXY_PORT}", impersonate=None, http2=False)
+            result = asyncio.run(client.get("http://fixture.invalid/strict-explicit", timeout=1))
+            assert result.text == "fixture-proxy", result
+        finally:
+            if client is not None:
+                asyncio.run(client.aclose())
+            if strict_env is None:
+                os.environ.pop("OSINT_REQUIRE_PROXY", None)
+            else:
+                os.environ["OSINT_REQUIRE_PROXY"] = strict_env
+            for name, value in proxy_env.items():
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+        time.sleep(0.1)
+        assert capture.counts[proxy_key] > before_proxy
+        assert capture.counts[origin_key] == before_origin
+        print("PASS: strict Http ignored conflicting HTTP_PROXY and used the explicit proxy")
 
         # Detector calibration: a deliberately direct local TCP request must
         # appear in capture. This is loopback-only and cannot reach a provider.
