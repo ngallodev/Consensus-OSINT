@@ -9,8 +9,8 @@
 
 - Initial `git status --short --branch`: clean; `HEAD` matched the requested base and branch.
 - `codebase-memory-cli status --json --project consensus-phase1-network`: ready at `2026-11-04T21:51:41Z`, 4,543 nodes / 14,747 edges, no partial/skipped files, generation matches. It reports 34 ignored assets and two unusable Jinja templates. Coverage for `consensus_osint/core/http.py` was best-effort with no recorded issue. Structural search returned 88 matches, first page 50 with another page available; no negative/exhaustive claim is based on that graph. Vendor is not fully represented, so source search and direct reads were used for its transport families.
-- `unshare -n true`: exit 1, `Operation not permitted`. `nft`, `iptables`, and `tcpdump` were unavailable. A loopback bind in the host namespace succeeded, which provides no isolation.
-- Therefore no controlled network test was run. No packets, connections, DNS queries, or attempted direct egress were observed. This is an instrumentation/capability block, not evidence of no egress.
+- `unshare --user --map-root-user --net ...`: succeeds. The isolated namespace exposes only loopback; `ip -4 route show` and `ip -6 route show` are empty. `ip link set lo up` succeeds and an `AF_PACKET/SOCK_RAW` socket binds to `lo`. `nft`, `iptables`, and `tcpdump` remain unavailable. The harness refuses to start if any non-loopback interface or route appears, so it has no public-egress path without relying on firewall rules.
+- The first preflight implementation used privileged `unshare --net` and was too restrictive. It was replaced by `tools/egress-harness/run.py`, which creates the unprivileged user+network namespace and performs packet capture itself.
 
 ## Path matrix
 
@@ -27,7 +27,9 @@
 
 ## Harness and changes
 
-Added `tools/egress-harness/preflight.sh`, which fails closed unless a network namespace can be created. It deliberately does not launch a collector or claim packet assertions. The host returned the expected blocked result; a full local proxy/fake HTTP/DNS harness must be completed and run on a host with namespace and firewall/capture capability.
+Added `tools/egress-harness/run.py`: it verifies loopback-only topology and no routes before opening local fake proxy, HTTP origin, and DNS endpoints; captures Ethernet frames on loopback through AF_PACKET; and tests Consensus's shared `Http` with explicit proxy against `fixture.invalid`. It also performs local direct-TCP and DNS-shaped UDP calibration probes to confirm capture detects both packet classes. All sockets and destinations are loopback; no public provider or identity is addressed.
+
+Run `./tools/egress-harness/run.py` → exit 0. Observed: Consensus HTTP request arrived at the local recording proxy; no packet to fake-origin port during that request; deliberate local direct-TCP and fake-DNS UDP probes were both captured. Final run counters: proxy destination port 18081 = 10 packets, origin port 18080 = 10 packets (the deliberate calibration only), DNS port 15353 = 2 packets. These are local packet counts, not evidence about any external route.
 
 No implementation fix is isolated safely: strict suite mode does not yet exist, and changing the shared default would alter standalone behavior while leaving DNS, AI, browser, FlareSolverr, vendors, and update paths uncontrolled. No code behavior was changed. The suite was not accessed.
 
@@ -41,6 +43,6 @@ No implementation fix is isolated safely: strict suite mode does not yet exist, 
 
 ## Verification status and handoff
 
-The implementation checkpoint is complete (harness preflight and documentation only). Verification command `./tools/egress-harness/preflight.sh` returned exit 77 and `BLOCKED: network namespace creation is not permitted; no egress assertions were run`. This is the expected capability gate, not a passing egress test. Phase 1 remains blocked; only an isolated packet-level run can close the gate. Do not treat source inspection, a proxy flag, or an unobserved host namespace as proof of safety.
+The implementation checkpoint is complete (harness and documentation only). The controlled test verifies the shared HTTP client’s explicit proxy route and packet-capture calibration in a network namespace with no external interfaces or routes. It does **not** verify Consensus DNS resolver routing, absent/unhealthy proxy behavior, AI, vendor transports, browser, FlareSolverr, updates/installers, subprocesses, or route health. No nftables firewall was available; the test instead asserts that the namespace has no non-loopback interface and no IPv4/IPv6 route before starting. Phase 1 remains blocked until all enabled route families have equivalent controlled evidence and a strict enabled-module set is defined.
 
 No Jev decision was required: the gate authority and missing isolation capability determine the outcome without a semantic choice. No authentication/configuration lookup was attempted.

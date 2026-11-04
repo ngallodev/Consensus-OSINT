@@ -1,10 +1,10 @@
 # Network surface inventory (Phase 1 audit)
 
-**Evidence labels:** **Verified** means the source contains the path described. **Static concern** means source structure appears incompatible with the suite route contract; it is not evidence of a runtime leak. Controlled packet behavior remains unverified.
+**Evidence labels:** **Verified** means source contains the path described. **Observed** means the local isolated harness recorded it. **Static concern** means source structure appears incompatible with the suite route contract; it is not evidence of a runtime leak. External/public route behavior remains unverified.
 
 | Surface | Source path / observed behavior | Suite compatibility status |
 |---|---|---|
-| Main HTTP | `consensus_osint/core/http.py:76-131,152-162,185-200,240-312`: HTTPX AsyncClient; explicit proxy used when set, otherwise default client; HTTP/1.1 fallback, redirects, safe-method retry, optional curl_cffi. | **Static concern:** no explicit `trust_env=False`; no mandatory route. Wrapper redirects remain on the same client; redirect destinations are not constrained to an allowlist. |
+| Main HTTP | `consensus_osint/core/http.py:76-131,152-162,185-200,240-312`: HTTPX AsyncClient; explicit proxy used when set, otherwise default client; HTTP/1.1 fallback, redirects, safe-method retry, optional curl_cffi. | **Observed:** explicit proxy sent fake-host request to loopback recording proxy; no packet to fake-origin port. **Static concern:** no mandatory route or explicit `trust_env=False`; redirects are not constrained to an allowlist. |
 | Route inputs | `consensus_osint/cli.py:116-128,477-492,506-514`: `--proxy`, `--tor`, `CONSENSUS_PROXY`, and config are accepted. | Does not by itself enforce proxyctl, route health, `OSINT_REQUIRE_PROXY=1`, `OSINT_RUN_ID`, or `socks5h`; suite requires these (`osint-suite/docs/OSINT_SUITE_RUNTIME_CONTRACT.md:7-23`). |
 | Email DNS | `consensus_osint/core/emailinfo.py:103-131,148-173`: dnspython sync and async resolvers perform MX/TXT/DMARC lookups. | **Static concern:** resolver uses system DNS configuration outside the HTTP proxy. Actual packets/destination unobserved. |
 | Vendored modules | `consensus_osint/adapters/user_scanner_adapter.py:553-635` patches selected user-scanner HTTPX behavior; `holehe_adapter.py`, `ignorant_adapter.py`, `socialscan_adapter.py`, `numint_adapter.py` load vendored implementations. Direct scan of excluded vendor tree found independent HTTPX/aiohttp clients in provider files (for example `vendor/user_scanner/email_scan/learning/lingq.py`, `vendor/socialscan/platforms.py`). | **Static concern:** broad vendor tree excluded from graph; per-provider client/config/route needs path-by-path audit. Search findings are representative, not exhaustive. |
@@ -26,8 +26,10 @@ Codebase Memory excludes `consensus_osint/vendor/` and reports 34 ignored templa
 3. Test explicit Tor remote DNS, absent/unhealthy route failure, redirects, retries, curl_cffi, user-scanner hooks, browser, FlareSolverr and update routes.
 4. Define a narrow approved module set only after each enabled path passes; report exact observations rather than inferring from flags.
 
-## Phase 1 static audit findings
+## Phase 1 audit findings
 
 The scoped search covered `consensus_osint/core`, `adapters`, and `vendor` for HTTPX, requests, urllib, aiohttp, curl_cffi, DNS resolvers, sockets, subprocesses and browser/solver entrypoints. It is not a complete call graph of every vendored provider. `trust_env` is explicitly disabled in FlareSolverr, but not in the shared HTTP client, standalone AI client, nor every vendor transport. Proxy parsing accepts `socks5` (`core/proxy.py:7-37`); no evidence establishes remote DNS semantics for that scheme. The Tor default is `socks5://127.0.0.1:9050` (`core/http.py:34`), not the suite-required `socks5h`. Explicit `--proxy`/`--tor` paths, absent route, redirects and retries have not been exercised.
 
 No phase-1 route is approved for suite use. Static inspection cannot establish whether a request was emitted or blocked.
+
+`tools/egress-harness/run.py` ran under `unshare --user --map-root-user --net`. It confirmed the proxy observation and packet capture for deliberate loopback TCP and fake-DNS UDP calibration. The namespace had only `lo` and no IPv4/IPv6 routes, checked before fixture startup. Thus the harness had no public egress route. This verifies only the shared HTTP proxy case; the DNS, vendor, AI, browser, solver, updater and other independent clients remain unverified. `nft`, `iptables`, and `tcpdump` are unavailable.
