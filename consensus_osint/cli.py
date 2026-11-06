@@ -1447,8 +1447,9 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
         return 130
     if save_failed:
         return 1
-    if (os.environ.get("OSINT_REQUIRE_PROXY") == "1" and checks
-            and all(f.status is Status.ERROR and f.method == "network" for f in checks)):
+    attempted = [f for f in checks if f.status is not Status.SKIPPED]
+    if (os.environ.get("OSINT_REQUIRE_PROXY") == "1" and attempted
+            and all(f.status is Status.ERROR and f.method == "network" for f in attempted)):
         print("error: every attempted catalogue check failed at the network layer", file=sys.stderr)
         return 3
     return 2 if nothing_checked else 0
