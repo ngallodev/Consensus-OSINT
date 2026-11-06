@@ -200,6 +200,13 @@ class Fixtures:
         with conn:
             data = conn.recv(8192)
             self.requests.append(data)
+            if b"/interrupted" in data:
+                return
+            if b"/redirect" in data:
+                conn.sendall(b"HTTP/1.1 302 Found\r\nLocation: http://fixture.invalid/final\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                return
+            if b"/retry" in data and sum(b"/retry" in request for request in self.requests) == 1:
+                return
             conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 13\r\nConnection: close\r\n\r\nfixture-proxy")
 
     def _origin(self, conn: socket.socket) -> None:
@@ -309,6 +316,104 @@ async def exercise_socks5h() -> None:
         http_module.TOR_PROXY = configured
 
 
+async def exercise_strict_paths(fixtures: Fixtures) -> None:
+    from consensus_osint.core.http import Http
+    from consensus_osint.core.sitesdb import Site
+    from consensus_osint.core.username_checker import check_site
+    from consensus_osint.vendor.ignorant.modules.social_media import instagram
+
+    previous = os.environ.get("OSINT_REQUIRE_PROXY")
+    os.environ["OSINT_REQUIRE_PROXY"] = "1"
+    client = Http(proxy=f"http://127.0.0.1:{PROXY_PORT}", http2=False, retries=1)
+    try:
+        assert client.impersonate_target is None
+        before = len(fixtures.requests)
+        result = await client.get("http://fixture.invalid/redirect", timeout=3)
+        assert result.status == 200, result
+        requests = fixtures.requests[before:]
+        assert len(requests) == 2 and b"/redirect" in requests[0] and b"/final" in requests[1], requests
+        result = await client.get("http://fixture.invalid/retry", timeout=3)
+        assert result.status == 200, result
+        assert sum(b"/retry" in request for request in fixtures.requests) == 2
+        result = await client.get(f"http://127.0.0.1:{ORIGIN_PORT}/interrupted", timeout=3)
+        assert result.error, result
+        site = Site(id="fixture", name="fixture", url="http://fixture.invalid/site/{username}",
+                    detect={"type": "status_code"})
+        finding = await check_site(site, "localfixture", client, extract=False)
+        assert finding.http_status == 200, finding
+        assert any(b"/site/localfixture" in request for request in fixtures.requests)
+    finally:
+        await client.aclose()
+        if previous is None:
+            os.environ.pop("OSINT_REQUIRE_PROXY", None)
+        else:
+            os.environ["OSINT_REQUIRE_PROXY"] = previous
+
+    # Exercise a representative vendored module with a fake endpoint and the
+    # same proxy-bound HTTPX client; strict CLI policy still disables vendors.
+    previous_url = instagram.USERS_LOOKUP_URL
+    instagram.USERS_LOOKUP_URL = "http://fixture.invalid/vendor"
+    client = Http(proxy=f"http://127.0.0.1:{PROXY_PORT}", impersonate=None, http2=False)
+    try:
+        await instagram.instagram("5550100", "1", client.client, [])
+        assert any(b"/vendor" in request for request in fixtures.requests)
+    finally:
+        instagram.USERS_LOOKUP_URL = previous_url
+        await client.aclose()
+
+
+def exercise_dns_resolver(capture: Capture) -> None:
+    import dns.resolver
+    from consensus_osint.core.emailinfo import dns_info
+
+    original = dns.resolver.Resolver
+    def local_resolver():
+        resolver = original(configure=False)
+        resolver.nameservers = ["127.0.0.1"]
+        resolver.port = DNS_PORT
+        return resolver
+    before = capture.counts[(4, 17, DNS_PORT)]
+    dns.resolver.Resolver = local_resolver
+    try:
+        dns_info("fixture.invalid")
+    finally:
+        dns.resolver.Resolver = original
+    capture.wait_for((4, 17, DNS_PORT), before)
+
+
+async def exercise_curl_cffi(fixtures: Fixtures) -> None:
+    from curl_cffi.requests import AsyncSession
+
+    before = len(fixtures.requests)
+    async with AsyncSession(proxy=f"http://127.0.0.1:{PROXY_PORT}", trust_env=False) as client:
+        response = await client.get("http://fixture.invalid/curl", timeout=3)
+    assert response.status_code == 200
+    assert any(b"/curl" in request for request in fixtures.requests[before:])
+
+
+def exercise_strict_cli() -> None:
+    env = dict(os.environ, OSINT_REQUIRE_PROXY="1", PYTHONDONTWRITEBYTECODE="1")
+    env.pop("CONSENSUS_PROXY", None)
+    proxy = f"http://127.0.0.1:{PROXY_PORT}"
+    for args in (["user", "localfixture"], ["email", "fixture@example.invalid", "--proxy", proxy],
+                 ["user", "localfixture", "--proxy", proxy, "--site", "fixture", "--ai"],
+                 ["user", "localfixture", "--proxy", proxy, "--site", "fixture", "--browser"],
+                 ["user", "localfixture", "--proxy", proxy, "--site", "fixture", "--flaresolverr", "http://127.0.0.1:8191"],
+                 ["user", "localfixture", "--proxy", proxy, "--site", "fixture", "--recursive"],
+                 ["user", "localfixture", "--proxy", proxy, "--site", "fixture", "--mailcat"],
+                 ["user", "localfixture", "--proxy", proxy, "--site", "fixture", "--no-sites"], ["update"], ["mcp"],
+                 ["user", "localfixture", "--proxy", "socks5://127.0.0.1:9050"],
+                 ["user", "localfixture", "--proxy", "http://localhost:18081"],
+                 ["user", "localfixture", "--site", "fixture", "--proxy", "http://127.0.0.1:18081/path"]):
+        result = subprocess.run([sys.executable, "-m", "consensus_osint.cli", *args], cwd=ROOT, env=env,
+                                capture_output=True, text=True, timeout=15)
+        assert result.returncode == 2, (args, result.returncode, result.stderr)
+    result = subprocess.run([sys.executable, "-m", "consensus_osint.cli", "user", "localfixture", "--proxy", proxy,
+                             "--site", "nonexistent-fixture-id", "--jsonl"], cwd=ROOT, env=env,
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 2 and "selected no catalogue checks" in result.stderr, (result.returncode, result.stderr)
+
+
 def inside() -> None:
     check_isolation()
     test_egress_drop()
@@ -356,12 +461,32 @@ def inside() -> None:
         asyncio.run(test_strict_network_status())
         print("PASS: strict network-status check skips direct/system-proxy probes")
 
+        before_origin = capture.counts[origin_key]
+        before_dns = sum(n for (_, proto, port), n in capture.counts.items() if proto == 17 and port == 53)
+        asyncio.run(exercise_strict_paths(fixtures))
+        asyncio.run(exercise_curl_cffi(fixtures))
+        time.sleep(0.1)
+        assert capture.counts[origin_key] == before_origin
+        assert sum(n for (_, proto, port), n in capture.counts.items() if proto == 17 and port == 53) == before_dns
+        print("PASS: strict HTTP redirects, retry, interrupted proxy and catalogue checker used only the local proxy; curl impersonation disabled")
+        print("PASS: representative vendored Ignorant module used a supplied proxy-bound client against a fake endpoint; vendor remains disabled in strict CLI")
+        print("PASS: curl_cffi used an explicit local proxy with ambient discovery disabled; curl impersonation remains disabled in strict CLI")
+        exercise_dns_resolver(capture)
+        print("PASS: dnspython resolver emitted DNS to the local fake resolver; strict username-only policy excludes this path")
+        exercise_strict_cli()
+        print("PASS: strict CLI rejects missing routes, unsafe options, DNS scan types, updates, MCP and local-DNS proxy schemes")
+
+        os.environ["OSINT_REQUIRE_PROXY"] = "1"
         failed = Http(proxy="http://127.0.0.1:18083", impersonate=None, http2=False)
         try:
-            result = asyncio.run(failed.get("http://fixture.invalid/no-fallback", timeout=1))
+            result = asyncio.run(failed.get(f"http://127.0.0.1:{ORIGIN_PORT}/no-fallback", timeout=1))
             assert result.error, result
         finally:
             asyncio.run(failed.aclose())
+            if previous is None:
+                os.environ.pop("OSINT_REQUIRE_PROXY", None)
+            else:
+                os.environ["OSINT_REQUIRE_PROXY"] = previous
         time.sleep(0.1)
         assert capture.counts[origin_key] == origin_before
         print("PASS: unavailable proxy failed closed; no fake-origin fallback packet observed")

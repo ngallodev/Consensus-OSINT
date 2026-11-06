@@ -480,6 +480,21 @@ def _route(args: argparse.Namespace) -> tuple[str | None, bool]:
     Every scan must honour the configured route to avoid exposing the
     user's address through the others.
     """
+    if os.environ.get("OSINT_REQUIRE_PROXY") == "1":
+        proxy = getattr(args, "proxy", None)
+        if not proxy or getattr(args, "tor", False):
+            raise ValueError("strict mode requires an explicit --proxy and does not accept --tor")
+        from ipaddress import ip_address
+
+        try:
+            parsed = urlparse(_proxy_arg(proxy))
+            ip_address(parsed.hostname)
+            if (parsed.scheme not in ("http", "https", "socks5h") or not parsed.port
+                    or parsed.path not in ("", "/") or parsed.params or parsed.query or parsed.fragment):
+                raise ValueError
+        except (ValueError, argparse.ArgumentTypeError):
+            raise ValueError("strict --proxy requires an IP address, explicit port and http, https or socks5h scheme") from None
+        return proxy, False
     cfg = get_config().get("defaults", {})
     proxy = getattr(args, "proxy", None) or os.environ.get("CONSENSUS_PROXY") or cfg.get("proxy")
     if proxy:
@@ -638,6 +653,8 @@ class Scanner:
         if limit:
             sites, modules = limit_plan(sites, modules, limit, self.sites_db().sites, paired)
         total = len(sites) + len(modules)
+        if os.environ.get("OSINT_REQUIRE_PROXY") == "1" and not total:
+            raise ValueError("strict mode selected no catalogue checks")
         # Switching every check off (--no-sites --no-modules) is a deliberate dry run;
         # a filter that happens to select nothing is a mistake worth explaining.
         if not total and depth == 0 and not self.args.no_sites and not self.continuation:
@@ -1162,6 +1179,9 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
     if not queries:
         print("nothing to scan: give at least one username, e-mail or phone number", file=sys.stderr)
         return 2
+    if os.environ.get("OSINT_REQUIRE_PROXY") == "1" and any(kind != "username" for _, kind in queries):
+        print("error: strict mode only supports username catalogue scans", file=sys.stderr)
+        return 2
     if args.output and Path(args.output).expanduser().is_dir():
         print("output is a directory: give a report filename, such as reports/results.html", file=sys.stderr)
         return 2
@@ -1259,10 +1279,11 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
                     # providers run only after preparation and verification.
                     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="consensus-prepare") as preparation:
                         database = preparation.submit(SiteDB.load)
-                        modules = preparation.submit(all_modules)
+                        modules = preparation.submit(all_modules) if not args.no_modules else None
                         scanner = Scanner(args, printer)
                         scanner.db = database.result()
-                        modules.result()
+                        if modules is not None:
+                            modules.result()
                     prepare()
                     return await scanner.run(queries)
                 except asyncio.CancelledError:
@@ -1775,11 +1796,15 @@ def main(argv: list | None = None, *, scan_defaults=None, on_summary=None, on_re
          in_session=False, continuation=None) -> int:
     _utf8_console(sys.stdout, sys.stderr)
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    strict = os.environ.get("OSINT_REQUIRE_PROXY") == "1"
     # A global startup switch works before or after the command. Preserve tokens
     # after --, where a literal search term must not be interpreted as an option.
     boundary = raw_argv.index("--") if "--" in raw_argv else len(raw_argv)
     no_update_check = "--no-update-check" in raw_argv[:boundary]
     raw_argv = [arg for arg in raw_argv[:boundary] if arg != "--no-update-check"] + raw_argv[boundary:]
+    if strict and not raw_argv:
+        print("error: strict mode requires an explicit scan command and --proxy", file=sys.stderr)
+        return 2
     if not raw_argv or all(arg in ("-h", "--help", "--no-color", "--no-footer", "--no-animation") for arg in raw_argv):
         from .core.scan_control import terminal_available
 
@@ -1819,6 +1844,20 @@ def main(argv: list | None = None, *, scan_defaults=None, on_summary=None, on_re
             pass
     cmd = args.cmd or "scan"
     try:
+        if strict:
+            if cmd not in ("scan", "user", "username") or in_session or continuation is not None:
+                raise ValueError("strict mode only supports noninteractive username catalogue scans")
+            if getattr(args, "type", "auto") not in ("auto", "username"):
+                raise ValueError("strict mode only supports username catalogue scans")
+            if not args.site or args.no_sites or args.all_sites:
+                raise ValueError("strict mode requires --site and enabled catalogue checks")
+            if any(getattr(args, name, False) for name in
+                   ("ai", "browser", "browse", "flaresolverr", "recursive", "search_engines", "mailcat", "allow_loud")):
+                raise ValueError("strict mode disallows AI, browser, solver, recursion, discovery and loud checks")
+            _route(args)
+            args.no_modules = args.no_impersonate = args.no_extract = args.no_footer = True
+            args.no_breach = True
+            no_update_check = True
         if not in_session and cmd == "shell":
             from .core.interactive import prepare_screen
 

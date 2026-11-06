@@ -96,7 +96,7 @@ class Http:
             raise ValueError("OSINT_REQUIRE_PROXY=1 requires an explicit proxy or Tor route")
         self.user_agent = user_agent
         self.retries = retries
-        self.impersonate_target = impersonate
+        self.impersonate_target = None if strict_route else impersonate
         if not _positive_timeout(timeout):
             raise ValueError("HTTP timeout must be a finite positive number")
         if type(max_response_bytes) is not int or max_response_bytes < 1:
