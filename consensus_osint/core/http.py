@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import random
 import time
 from collections import defaultdict
@@ -31,7 +32,7 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0",
 ]
 
-TOR_PROXY = "socks5://127.0.0.1:9050"
+TOR_PROXY = "socks5h://127.0.0.1:9050"
 DEFAULT_MAX_RESPONSE_BYTES = 5 * 1024 * 1024
 
 
@@ -90,9 +91,12 @@ class Http:
         self.timeout = timeout
         self.verify = verify
         self.proxy = TOR_PROXY if tor and not proxy else proxy
+        strict_route = os.environ.get("OSINT_REQUIRE_PROXY") == "1"
+        if strict_route and not self.proxy:
+            raise ValueError("OSINT_REQUIRE_PROXY=1 requires an explicit proxy or Tor route")
         self.user_agent = user_agent
         self.retries = retries
-        self.impersonate_target = impersonate
+        self.impersonate_target = None if strict_route else impersonate
         if not _positive_timeout(timeout):
             raise ValueError("HTTP timeout must be a finite positive number")
         if type(max_response_bytes) is not int or max_response_bytes < 1:
@@ -108,6 +112,7 @@ class Http:
         kwargs = dict(
             http2=http2,
             follow_redirects=False,
+            trust_env=not strict_route,
             timeout=httpx.Timeout(timeout, connect=min(timeout, 10.0)),
             limits=limits,
             verify=verify,

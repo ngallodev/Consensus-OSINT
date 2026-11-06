@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import ipaddress
+import os
 from dataclasses import dataclass
 from urllib.request import getproxies
 
@@ -48,6 +49,16 @@ def system_proxy_configured():
 
 
 async def check_network(proxy=None, *, system_proxy=False):
+    if os.environ.get("OSINT_REQUIRE_PROXY") == "1":
+        if not proxy:
+            return NetworkStatus(public_ip="not checked", proxy_status="unverified")
+        routed = await observe_ip(proxy=proxy, trust_env=False)
+        try:
+            ipaddress.ip_address(routed)
+            state = "observed"
+        except ValueError:
+            state = "unverified"
+        return NetworkStatus(public_ip="not checked", proxy_ip=routed, proxy_status=state)
     if proxy or system_proxy:
         public, routed = await asyncio.gather(observe_ip(), observe_ip(proxy=proxy, trust_env=system_proxy))
         try:
