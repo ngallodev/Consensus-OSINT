@@ -652,6 +652,9 @@ class Scanner:
         limit = self.args.top or (300 if getattr(self.args, "fast", False) else None)
         if limit:
             sites, modules = limit_plan(sites, modules, limit, self.sites_db().sites, paired)
+        if os.environ.get("OSINT_REQUIRE_PROXY") == "1":
+            requested = {item.lower() for item in self._csv(self.args.site)}
+            sites = [site for site in sites if site.id.lower() in requested and not site.effective_disabled]
         total = len(sites) + len(modules)
         if os.environ.get("OSINT_REQUIRE_PROXY") == "1" and not total:
             raise ValueError("strict mode selected no catalogue checks")
@@ -1802,7 +1805,7 @@ def main(argv: list | None = None, *, scan_defaults=None, on_summary=None, on_re
     boundary = raw_argv.index("--") if "--" in raw_argv else len(raw_argv)
     no_update_check = "--no-update-check" in raw_argv[:boundary]
     raw_argv = [arg for arg in raw_argv[:boundary] if arg != "--no-update-check"] + raw_argv[boundary:]
-    if strict and not raw_argv:
+    if strict and (not raw_argv or all(arg in ("--no-color", "--no-footer", "--no-animation") for arg in raw_argv)):
         print("error: strict mode requires an explicit scan command and --proxy", file=sys.stderr)
         return 2
     if not raw_argv or all(arg in ("-h", "--help", "--no-color", "--no-footer", "--no-animation") for arg in raw_argv):

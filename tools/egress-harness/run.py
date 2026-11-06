@@ -395,7 +395,7 @@ def exercise_strict_cli() -> None:
     env = dict(os.environ, OSINT_REQUIRE_PROXY="1", PYTHONDONTWRITEBYTECODE="1")
     env.pop("CONSENSUS_PROXY", None)
     proxy = f"http://127.0.0.1:{PROXY_PORT}"
-    for args in (["user", "localfixture"], ["email", "fixture@example.invalid", "--proxy", proxy],
+    for args in (["--no-color"], ["user", "localfixture"], ["email", "fixture@example.invalid", "--proxy", proxy],
                  ["user", "localfixture", "--proxy", proxy, "--site", "fixture", "--ai"],
                  ["user", "localfixture", "--proxy", proxy, "--site", "fixture", "--browser"],
                  ["user", "localfixture", "--proxy", proxy, "--site", "fixture", "--flaresolverr", "http://127.0.0.1:8191"],
@@ -563,7 +563,7 @@ def inside() -> None:
         capture.wait_for(dns_key, before)
         print("PASS: packet capture detected the deliberate fake-DNS UDP calibration")
         print(f"OBSERVED: local packets by destination port: http-proxy={proxy_after}, socks-proxy={capture.counts[socks_key]}, origin={capture.counts[origin_key]}, fake-dns={capture.counts[dns_key]}")
-        print("LIMIT: validates shared Http proxying, socks5h, and missing/unavailable proxy behavior; DNS resolver and other transports remain unaudited")
+        print("LIMIT: fixtures cover selected paths only; proxyctl health, production catalogue/provider coverage and independent vendor clients remain unaudited")
     finally:
         fixtures.close()
         capture.close()
