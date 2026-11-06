@@ -1,5 +1,7 @@
 # Risk register (updated Phase 1)
 
+**2026-11-05 classification:** R1: **not yet verified** for the full strict path (ambient HTTPX behavior is a confirmed standalone contract violation); R2: **confirmed violation** for unproxied DNS, with email and independent clients disabled by strict CLI policy; R3: **disabled by policy** in strict CLI; R6: **disabled by policy** for strict CLI, otherwise not yet verified. Detailed classifications and controlled evidence are in [Phase 1 report](phase-1-report.md) and [network inventory](network-surface-inventory.md). Older dispositions below preserve the historical investigation context, not a current acceptance claim.
+
 Ratings express current concern and uncertainty, not an observed incident. Harness observations are loopback-only; no public egress was attempted or observed.
 
 | ID | Risk | Rating | Evidence / basis | Phase 0 disposition |
