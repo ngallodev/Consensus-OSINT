@@ -265,7 +265,8 @@ async def check_site(
         return Finding(query=username, query_type=query_type, site=site.name,
                        site_id=site.id, category=site.category, tags=list(site.tags),
                        source="sites-db", nsfw=site.nsfw, url=site.profile_url(username),
-                       status=Status.ERROR, elapsed=round(time.perf_counter() - started, 3),
+                       status=Status.ERROR, method="network",
+                       elapsed=round(time.perf_counter() - started, 3),
                        error=f"site deadline exceeded after {deadline:g}s")
 
 

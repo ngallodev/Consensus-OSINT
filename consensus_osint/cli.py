@@ -508,6 +508,17 @@ def _route(args: argparse.Namespace) -> tuple[str | None, bool]:
     return proxy, bool(getattr(args, "tor", False) or cfg.get("tor") is True)
 
 
+def _strict_sites(sites: list, requested: list | None) -> list:
+    """Keep only the exact enabled catalogue IDs named by strict ``--site``.
+
+    Names and domains are accepted in ordinary scans; the strict profile requires
+    exact ids so a single token cannot widen the routed scope. Disabled and
+    audit-restricted entries are never contacted in strict mode.
+    """
+    wanted = {token.strip().lower() for token in requested or []}
+    return [site for site in sites if site.id.lower() in wanted and not site.effective_disabled]
+
+
 # ---------------------------------------------------------------------------
 class Scanner:
     def __init__(self, args: argparse.Namespace, printer: Printer):
@@ -651,14 +662,14 @@ class Scanner:
             modules = self.continuation.select(username, id_type, modules, "module:")
             sites, modules = self.continuation.exclude_completed_alternatives(username, id_type, sites, modules, paired)
         limit = self.args.top or (300 if getattr(self.args, "fast", False) else None)
+        strict = os.environ.get("OSINT_REQUIRE_PROXY") == "1"
+        if strict:   # exact IDs first, so the limit applies to the explicit plan
+            sites = _strict_sites(sites, self._csv(self.args.site))
         if limit:
             sites, modules = limit_plan(sites, modules, limit, self.sites_db().sites, paired)
-        if os.environ.get("OSINT_REQUIRE_PROXY") == "1":
-            requested = {item.lower() for item in self._csv(self.args.site)}
-            sites = [site for site in sites if site.id.lower() in requested and not site.effective_disabled]
         total = len(sites) + len(modules)
-        if os.environ.get("OSINT_REQUIRE_PROXY") == "1" and not total:
-            raise ValueError("strict mode selected no catalogue checks")
+        if strict and not total:
+            raise ValueError("strict mode selected no catalogue checks; --site must name exact enabled catalogue IDs")
         # Switching every check off (--no-sites --no-modules) is a deliberate dry run;
         # a filter that happens to select nothing is a mistake worth explaining.
         if not total and depth == 0 and not self.args.no_sites and not self.continuation:
@@ -1366,8 +1377,8 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
 
             if printer.terminal_ui:
                 printer.terminal_ui.update("Saving report")
-            path = save_report(summary, args.output, args.format, include_all=args.all)
-            if on_report_saved is not None and args.all:
+            path = save_report(summary, args.output, args.format, include_all=args.all or interrupted)
+            if on_report_saved is not None and (args.all or interrupted):
                 on_report_saved(summary, path)
             printer.report_saved(path)
             if note := _format_note(args.output, args.format):
@@ -1386,7 +1397,7 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
         try:
             from .core import reports
 
-            text = reports.render(summary, args.format, include_all=args.all)
+            text = reports.render(summary, args.format, include_all=args.all or interrupted)
             buffer = getattr(sys.stdout, "buffer", None)
             if buffer is not None and not sys.stdout.isatty():
                 # Preserve CSV's own CRLF records when redirected on Windows;
