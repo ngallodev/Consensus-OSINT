@@ -212,8 +212,11 @@ class StrictSiteSelectionTests(unittest.TestCase):
         sites = [_SiteStub("twitter-x", "Twitter/X", "twitter.com")]
         site = sites[0]
         self.assertIn("twitter", site_keys(site))
-        self.assertEqual(cli._strict_sites(sites, ["Twitter"]), [])
-        self.assertEqual(cli._strict_sites(sites, ["x.com"]), [])
+        for token in ("Twitter", "x.com"):
+            with self.subTest(token=token), self.assertRaises(ValueError) as caught:
+                cli._strict_sites(sites, [token])
+            self.assertIn(f"not an exact enabled catalogue id for this scan: {token.lower()}",
+                          str(caught.exception))
 
     def test_exact_id_does_not_pull_in_domain_siblings(self):
         sites = [
