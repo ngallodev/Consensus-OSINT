@@ -195,6 +195,7 @@ class _SiteStub:
         self.id = site_id
         self.name = name
         self.domain = domain
+        self.sources = []
         self.disabled = disabled
         self.audit_disabled_reason = None
 
@@ -258,6 +259,7 @@ class _ScanStub:
     ctx = None
     http = None
     concurrency = 1
+    _tool_names = staticmethod(cli.Scanner._tool_names)
 
     def __init__(self, sites, args):
         self._sites = list(sites)
