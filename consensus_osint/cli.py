@@ -35,6 +35,7 @@ from .core.http import Http
 from .core.models import Finding, QueryType, ScanSummary, Status, dedupe_findings
 from .core.modules import Context, all_modules
 from .core.sitesdb import SiteDB, save_override, site_keys
+from .core.username_checker import SITE_DEADLINE_METHOD
 
 log = logging.getLogger("consensus")
 
@@ -509,14 +510,32 @@ def _route(args: argparse.Namespace) -> tuple[str | None, bool]:
 
 
 def _strict_sites(sites: list, requested: list | None) -> list:
-    """Keep only the exact enabled catalogue IDs named by strict ``--site``.
+    """Keep the exact enabled catalogue IDs named by strict ``--site``.
 
     Names and domains are accepted in ordinary scans; the strict profile requires
     exact ids so a single token cannot widen the routed scope. Disabled and
-    audit-restricted entries are never contacted in strict mode.
+    audit-restricted entries are never contacted in strict mode. Any requested
+    token this scan cannot select exactly rejects the whole selection, so a mixed
+    ``--site`` cannot silently narrow to its valid subset.
     """
-    wanted = {token.strip().lower() for token in requested or []}
+    wanted = list(dict.fromkeys(token.strip().lower() for token in requested or [] if token.strip()))
+    by_id = {site.id.lower(): site for site in sites}
+    rejected = [token for token in wanted if token not in by_id]
+    disabled = [token for token in wanted if token in by_id and by_id[token].effective_disabled]
+    if rejected or disabled:
+        problem = ""
+        if rejected:
+            problem = "not an exact enabled catalogue id for this scan: " + ", ".join(rejected)
+        if disabled:
+            problem += ("; " if problem else "") + "disabled: " + ", ".join(disabled)
+        raise ValueError("strict --site must name only exact enabled catalogue ids; " + problem)
     return [site for site in sites if site.id.lower() in wanted and not site.effective_disabled]
+
+
+# Error methods that count as "no usable response" for the whole-scan exit. A site
+# deadline can expire while local queueing, solver startup or parsing is running,
+# so exit 3 is not proof of a network-hop or selected-proxy failure.
+NO_RESPONSE_METHODS = frozenset({"network", SITE_DEADLINE_METHOD})
 
 
 # ---------------------------------------------------------------------------
@@ -1364,7 +1383,7 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
     checked = sum(counts.get(k, 0) for k in ("found", "not_found", "unknown", "blocked", "rate_limited", "error"))
     if checked >= 3 and counts.get("error", 0) >= 0.9 * checked:
         via = " or proxy" if (getattr(args, "proxy", None) or getattr(args, "tor", False)) else ""
-        printer.warn(f"{counts.get('error', 0)} of {checked} requests failed with network errors - "
+        printer.warn(f"{counts.get('error', 0)} of {checked} requests failed without a usable response - "
                      f"a 'found 0' here means nothing; check your connection{via} (-v shows the errors)")
     if args.browse:
         for f in found[:50]:
@@ -1460,8 +1479,10 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
         return 1
     attempted = [f for f in checks if f.status is not Status.SKIPPED]
     if (os.environ.get("OSINT_REQUIRE_PROXY") == "1" and attempted
-            and all(f.status is Status.ERROR and f.method == "network" for f in attempted)):
-        print("error: every attempted catalogue check failed at the network layer", file=sys.stderr)
+            and all(f.status is Status.ERROR and f.method in NO_RESPONSE_METHODS for f in attempted)):
+        print("error: every attempted catalogue check failed before a usable response (transport error or site "
+              "deadline; a site deadline also covers local queueing and parsing). This is not a negative finding "
+              "and does not identify the failing hop or the selected route.", file=sys.stderr)
         return 3
     return 2 if nothing_checked else 0
 

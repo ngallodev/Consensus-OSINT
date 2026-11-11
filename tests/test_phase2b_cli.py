@@ -161,15 +161,33 @@ async def _never_finishes(*_args, **_kwargs):
 
 
 class StrictSiteDeadlineTests(unittest.TestCase):
-    def test_site_deadline_is_a_network_failure_and_exits_three(self):
+    def test_site_deadline_is_classified_separately_and_exits_three(self):
         with (patch.object(username_checker, "_site_deadline", return_value=0.01),
               patch.object(username_checker, "_check_site", new=_never_finishes)):
             finding = asyncio.run(username_checker.check_site(_DeadlineSite(), "fixture", None))
         self.assertEqual(finding.status, Status.ERROR)
-        self.assertEqual(finding.method, "network")
+        self.assertEqual(finding.method, username_checker.SITE_DEADLINE_METHOD)
         code, stderr = run_scan([finding])
         self.assertEqual(code, 3)
-        self.assertIn("every attempted catalogue check failed", stderr)
+        self.assertIn("every attempted catalogue check failed before a usable response", stderr)
+        self.assertIn("not a negative finding", stderr)
+        self.assertNotIn("network layer", stderr)
+
+    def test_transport_and_deadline_failures_still_exit_three(self):
+        code, stderr = run_scan([
+            _finding(Status.ERROR, method="network"),
+            _finding(Status.ERROR, method=username_checker.SITE_DEADLINE_METHOD),
+        ])
+        self.assertEqual(code, 3)
+        self.assertIn("does not identify the failing hop", stderr)
+
+    def test_deadline_plus_another_attempt_does_not_exit_three(self):
+        code, stderr = run_scan([
+            _finding(Status.ERROR, method=username_checker.SITE_DEADLINE_METHOD),
+            _finding(Status.NOT_FOUND, method="status code"),
+        ])
+        self.assertEqual(code, 0)
+        self.assertNotIn("every attempted catalogue check failed", stderr)
 
 
 class _SiteStub:
@@ -204,9 +222,62 @@ class StrictSiteSelectionTests(unittest.TestCase):
         ]
         self.assertEqual([site.id for site in cli._strict_sites(sites, ["github"])], ["github"])
 
-    def test_disabled_entry_is_not_contacted(self):
+    def test_disabled_entry_is_rejected(self):
         sites = [_SiteStub("twitter-x", "Twitter/X", "twitter.com", disabled=True)]
-        self.assertEqual(cli._strict_sites(sites, ["twitter-x"]), [])
+        with self.assertRaises(ValueError) as caught:
+            cli._strict_sites(sites, ["twitter-x"])
+        self.assertIn("disabled: twitter-x", str(caught.exception))
+
+    def test_mixed_exact_id_with_unknown_id_is_rejected(self):
+        sites = [_SiteStub("github", "GitHub", "github.com")]
+        with self.assertRaises(ValueError) as caught:
+            cli._strict_sites(sites, ["github", "nope"])
+        self.assertIn("not an exact enabled catalogue id for this scan: nope", str(caught.exception))
+
+    def test_mixed_exact_id_with_domain_is_rejected(self):
+        sites = [_SiteStub("github", "GitHub", "github.com")]
+        with self.assertRaises(ValueError) as caught:
+            cli._strict_sites(sites, ["github", "github.com"])
+        self.assertIn("not an exact enabled catalogue id for this scan: github.com", str(caught.exception))
+
+    def test_mixed_exact_id_with_disabled_id_is_rejected(self):
+        sites = [_SiteStub("github", "GitHub", "github.com"),
+                 _SiteStub("twitter-x", "Twitter/X", "twitter.com", disabled=True)]
+        with self.assertRaises(ValueError) as caught:
+            cli._strict_sites(sites, ["github", "twitter-x"])
+        self.assertIn("disabled: twitter-x", str(caught.exception))
+
+
+class _ScanStub:
+    """Minimal Scanner surface for planning without requests or a catalogue."""
+
+    continuation = None
+    ctx = None
+    http = None
+    concurrency = 1
+
+    def __init__(self, sites, args):
+        self._sites = list(sites)
+        self.args = args
+        self.printer = _Printer()
+
+    def select_sites(self, id_type="username"):
+        return list(self._sites)
+
+    def select_modules(self, _kind):
+        return []
+
+    def sites_db(self):
+        return _Sites()
+
+    def _csv(self, value):
+        return [part.strip() for part in value.split(",") if part.strip()] if value else []
+
+    def _finish(self, findings, *_args):
+        return findings
+
+    def _collect(self, _finding):
+        pass
 
 
 class StrictSitePlanOrderTests(unittest.TestCase):
@@ -227,38 +298,30 @@ class StrictSitePlanOrderTests(unittest.TestCase):
         async def no_checks(*_args, **_kwargs):
             return []
 
-        class _ScanStub:
-            args = _args(site="github-user", top=1)
-            continuation = None
-            ctx = None
-            http = None
-            concurrency = 1
-
-            def select_sites(self, id_type="username"):
-                return list(sites)
-
-            def select_modules(self, _kind):
-                return []
-
-            def sites_db(self):
-                return _Sites()
-
-            def _csv(self, value):
-                return [part.strip() for part in value.split(",") if part.strip()] if value else []
-
-            def _finish(self, findings, *_args):
-                return findings
-
-            def _collect(self, _finding):
-                pass
-
-        stub = _ScanStub()
-        stub.printer = _Printer()
+        stub = _ScanStub(sites, _args(site="github-user", top=1))
         with (patch.dict(os.environ, {"OSINT_REQUIRE_PROXY": "1"}),
               patch.object(core_modules, "limit_plan", side_effect=limit_plan),
               patch.object(runner, "run_all", new=no_checks)):
             asyncio.run(cli.Scanner.scan_username(stub, "fixture"))
         self.assertEqual(seen["ids"], ["github-user"])
+
+    def test_mixed_selection_is_rejected_before_any_check_runs(self):
+        from consensus_osint.core import runner
+
+        calls = []
+
+        async def no_checks(*_args, **_kwargs):
+            calls.append(1)
+            return []
+
+        stub = _ScanStub([_SiteStub("github", "GitHub", "github.com")],
+                         _args(site="github,nope", top=None))
+        with (patch.dict(os.environ, {"OSINT_REQUIRE_PROXY": "1"}),
+              patch.object(runner, "run_all", new=no_checks),
+              self.assertRaises(ValueError) as caught):
+            asyncio.run(cli.Scanner.scan_username(stub, "fixture"))
+        self.assertEqual(calls, [])
+        self.assertIn("nope", str(caught.exception))
 
 
 class StrictInterruptedReportTests(unittest.TestCase):
