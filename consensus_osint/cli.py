@@ -35,6 +35,7 @@ from .core.http import Http
 from .core.models import Finding, QueryType, ScanSummary, Status, dedupe_findings
 from .core.modules import Context, all_modules
 from .core.sitesdb import SiteDB, save_override, site_keys
+from .core.username_checker import SITE_DEADLINE_METHOD
 
 log = logging.getLogger("consensus")
 
@@ -508,6 +509,35 @@ def _route(args: argparse.Namespace) -> tuple[str | None, bool]:
     return proxy, bool(getattr(args, "tor", False) or cfg.get("tor") is True)
 
 
+def _strict_sites(sites: list, requested: list | None) -> list:
+    """Keep the exact enabled catalogue IDs named by strict ``--site``.
+
+    Names and domains are accepted in ordinary scans; the strict profile requires
+    exact ids so a single token cannot widen the routed scope. Disabled and
+    audit-restricted entries are never contacted in strict mode. Any requested
+    token this scan cannot select exactly rejects the whole selection, so a mixed
+    ``--site`` cannot silently narrow to its valid subset.
+    """
+    wanted = list(dict.fromkeys(token.strip().lower() for token in requested or [] if token.strip()))
+    by_id = {site.id.lower(): site for site in sites}
+    rejected = [token for token in wanted if token not in by_id]
+    disabled = [token for token in wanted if token in by_id and by_id[token].effective_disabled]
+    if rejected or disabled:
+        problem = ""
+        if rejected:
+            problem = "not an exact enabled catalogue id for this scan: " + ", ".join(rejected)
+        if disabled:
+            problem += ("; " if problem else "") + "disabled: " + ", ".join(disabled)
+        raise ValueError("strict --site must name only exact enabled catalogue ids; " + problem)
+    return [site for site in sites if site.id.lower() in wanted and not site.effective_disabled]
+
+
+# Error methods that count as "no usable response" for the whole-scan exit. A site
+# deadline can expire while local queueing, solver startup or parsing is running,
+# so exit 3 is not proof of a network-hop or selected-proxy failure.
+NO_RESPONSE_METHODS = frozenset({"network", SITE_DEADLINE_METHOD})
+
+
 # ---------------------------------------------------------------------------
 class Scanner:
     def __init__(self, args: argparse.Namespace, printer: Printer):
@@ -651,14 +681,14 @@ class Scanner:
             modules = self.continuation.select(username, id_type, modules, "module:")
             sites, modules = self.continuation.exclude_completed_alternatives(username, id_type, sites, modules, paired)
         limit = self.args.top or (300 if getattr(self.args, "fast", False) else None)
+        strict = os.environ.get("OSINT_REQUIRE_PROXY") == "1"
+        if strict:   # exact IDs first, so the limit applies to the explicit plan
+            sites = _strict_sites(sites, self._csv(self.args.site))
         if limit:
             sites, modules = limit_plan(sites, modules, limit, self.sites_db().sites, paired)
-        if os.environ.get("OSINT_REQUIRE_PROXY") == "1":
-            requested = {item.lower() for item in self._csv(self.args.site)}
-            sites = [site for site in sites if site.id.lower() in requested and not site.effective_disabled]
         total = len(sites) + len(modules)
-        if os.environ.get("OSINT_REQUIRE_PROXY") == "1" and not total:
-            raise ValueError("strict mode selected no catalogue checks")
+        if strict and not total:
+            raise ValueError("strict mode selected no catalogue checks; --site must name exact enabled catalogue IDs")
         # Switching every check off (--no-sites --no-modules) is a deliberate dry run;
         # a filter that happens to select nothing is a mistake worth explaining.
         if not total and depth == 0 and not self.args.no_sites and not self.continuation:
@@ -1353,7 +1383,7 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
     checked = sum(counts.get(k, 0) for k in ("found", "not_found", "unknown", "blocked", "rate_limited", "error"))
     if checked >= 3 and counts.get("error", 0) >= 0.9 * checked:
         via = " or proxy" if (getattr(args, "proxy", None) or getattr(args, "tor", False)) else ""
-        printer.warn(f"{counts.get('error', 0)} of {checked} requests failed with network errors - "
+        printer.warn(f"{counts.get('error', 0)} of {checked} requests failed without a usable response - "
                      f"a 'found 0' here means nothing; check your connection{via} (-v shows the errors)")
     if args.browse:
         for f in found[:50]:
@@ -1366,8 +1396,8 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
 
             if printer.terminal_ui:
                 printer.terminal_ui.update("Saving report")
-            path = save_report(summary, args.output, args.format, include_all=args.all)
-            if on_report_saved is not None and args.all:
+            path = save_report(summary, args.output, args.format, include_all=args.all or interrupted)
+            if on_report_saved is not None and (args.all or interrupted):
                 on_report_saved(summary, path)
             printer.report_saved(path)
             if note := _format_note(args.output, args.format):
@@ -1386,7 +1416,7 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
         try:
             from .core import reports
 
-            text = reports.render(summary, args.format, include_all=args.all)
+            text = reports.render(summary, args.format, include_all=args.all or interrupted)
             buffer = getattr(sys.stdout, "buffer", None)
             if buffer is not None and not sys.stdout.isatty():
                 # Preserve CSV's own CRLF records when redirected on Windows;
@@ -1447,6 +1477,13 @@ def cmd_scan(args: argparse.Namespace, *, on_summary=None, on_report_saved=None,
         return 130
     if save_failed:
         return 1
+    attempted = [f for f in checks if f.status is not Status.SKIPPED]
+    if (os.environ.get("OSINT_REQUIRE_PROXY") == "1" and attempted
+            and all(f.status is Status.ERROR and f.method in NO_RESPONSE_METHODS for f in attempted)):
+        print("error: every attempted catalogue check failed before a usable response (transport error or site "
+              "deadline; a site deadline also covers local queueing and parsing). This is not a negative finding "
+              "and does not identify the failing hop or the selected route.", file=sys.stderr)
+        return 3
     return 2 if nothing_checked else 0
 
 

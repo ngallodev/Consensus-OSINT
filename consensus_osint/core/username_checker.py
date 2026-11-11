@@ -34,6 +34,11 @@ from .sitesdb import Site
 
 log = logging.getLogger("consensus.username")
 
+# Method label for a whole-site deadline. Unlike ``network`` this also covers
+# local queueing, solver startup and parsing time, so it must not be read as
+# proof that a request left the host or that the proxy failed.
+SITE_DEADLINE_METHOD = "site deadline"
+
 
 def _any_in(needles, hay: str) -> bool:
     return any(n and n in hay for n in needles)
@@ -265,7 +270,8 @@ async def check_site(
         return Finding(query=username, query_type=query_type, site=site.name,
                        site_id=site.id, category=site.category, tags=list(site.tags),
                        source="sites-db", nsfw=site.nsfw, url=site.profile_url(username),
-                       status=Status.ERROR, elapsed=round(time.perf_counter() - started, 3),
+                       status=Status.ERROR, method=SITE_DEADLINE_METHOD,
+                       elapsed=round(time.perf_counter() - started, 3),
                        error=f"site deadline exceeded after {deadline:g}s")
 
 
