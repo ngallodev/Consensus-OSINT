@@ -167,7 +167,7 @@ The Windows install bundle is recommended for most users. It sets up Python and 
 
 ### Tested platforms
 
-The published **0.4.10** release was tested on **Windows and Linux**, including installation/update checks. Native macOS testing was not completed for that release; macOS installation instructions are available, but it is not labelled as tested. Platform tests do not guarantee that every external provider is available.
+Documented installation/update checks cover the published **0.4.10** release on **Windows and Linux**; that evidence does not establish platform testing for later releases. Native macOS testing was not completed for 0.4.10. Platform tests do not guarantee that every external provider is available.
 
 ### Other installation options
 
@@ -217,7 +217,7 @@ consensus phone "+COUNTRY_CODE_AND_NUMBER"
 consensus user "YOUR_USERNAME" -o reports/username.html
 ```
 
-Explore more with `consensus --help` or `consensus examples`.
+Explore more with `consensus scan --help` or `consensus examples`.
 
 </details>
 
